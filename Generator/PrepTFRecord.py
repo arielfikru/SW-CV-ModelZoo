@@ -1,45 +1,39 @@
-import sqlite3
-
-import numpy as np
+import os
 import tensorflow as tf
 
-
 class DataGenerator:
-    def __init__(self, db_path, images_list, labels_list):
-        self.db_path = db_path
-        self.images_list = images_list
-        self.labels_list = labels_list
+    def __init__(self, input_folder):
+        self.input_folder = input_folder
+        self.classes = os.listdir(input_folder)
+        self.class_to_label = {cls_name: idx for idx, cls_name in enumerate(self.classes)}
 
-    def getLabels(self, filename):
-        db = sqlite3.connect(self.db_path)
-        db_cursor = db.cursor()
+    def get_labels(self, file_path):
+        # Extract class name from the file path and convert to label
+        parts = tf.strings.split(file_path, os.path.sep)
+        class_name = parts[-2]
+        label = self.class_to_label[class_name.numpy()]
+        return label
 
-        img_id = int(
-            filename.numpy().decode("utf-8").rsplit("/", 1)[1].rsplit(".", 1)[0]
-        )
+    def load_image(self, file_path):
+        # Load the raw data from the file as a string
+        img = tf.io.read_file(file_path)
+        img = tf.image.decode_jpeg(img, channels=3)
+        return img
 
-        query = "SELECT tag_id FROM imageTags WHERE image_id = ?"
-        db_cursor.execute(query, (img_id,))
-        tags = db_cursor.fetchall()
-        db.close()
-
-        tags = [tag_id[0] for tag_id in tags]
-        encoded = np.isin(self.labels_list, tags).astype(np.float32)
-        return img_id, encoded
-
-    def getImage(self, filename):
-        img_bytes = tf.io.read_file(filename)
-        return img_bytes
-
-    def wrap_func(self, filename):
-        image_bytes = self.getImage(filename)
-        [image_id, image_labels_1h] = tf.py_function(
-            self.getLabels, [filename], [tf.int64, tf.float32]
-        )
-        image_id.set_shape(())
-        image_labels_1h.set_shape(len(self.labels_list))
-        image_labels = tf.where(image_labels_1h)
-        return image_id, image_bytes, image_labels
+    def wrap_func(self, file_path):
+        label = tf.py_function(self.get_labels, [file_path], [tf.int64])
+        img = self.load_image(file_path)
+        return img, label[0]
 
     def genDS(self):
-        return tf.data.Dataset.from_tensor_slices(self.images_list)
+        # List all image files
+        image_paths = []
+        for class_name in self.classes:
+            class_path = os.path.join(self.input_folder, class_name)
+            for img_name in os.listdir(class_path):
+                image_paths.append(os.path.join(class_path, img_name))
+
+        # Create dataset
+        dataset = tf.data.Dataset.from_tensor_slices(image_paths)
+        dataset = dataset.map(lambda x: self.wrap_func(x))
+        return dataset
